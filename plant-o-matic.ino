@@ -111,15 +111,15 @@ byte p [8] = // кодируем символ (п)
 #define VENT_OFF 0
 
 OneWire oneWire(ONE_WIRE_BUS);
-DallasTemperature sensors(&oneWire);
-iarduino_DHT sensor(DHT_PIN);
+DallasTemperature DS18B20(&oneWire);
+iarduino_DHT DHT22(DHT_PIN);
 LiquidCrystal_I2C lcd(0x27,20,4);  // Устанавливаем дисплей
 iarduino_RTC time(RTC_DS1302, 40, 38, 39); // подключаем RTC модуль на базе чипа DS1302, указывая выводы Arduino подключённые к выводам модуля RST, CLK, DAT
 
 float sensHum = 0;
 int ventState = VENT_OFF;
 int sensorHumGroundValue =0;
-String tmp;
+
 // состояния системы
 enum State
 {
@@ -135,6 +135,8 @@ State statePompa;
 long unixTime;
 // проверка влажности почвы
 long timeMoistureCheck;
+
+
 
 void setup()
 { 
@@ -156,7 +158,7 @@ void setup()
   
   statePompa = OFF;
  // __TIMESTAMP__
-  sensors.begin(); // DS18B20
+  DS18B20.begin(); // DS18B20
   time.begin();
   // time.settime(0,7,0,23,11,17,2);
   // синкаем вручную время
@@ -173,15 +175,13 @@ void setup()
 
 void loop()
 {
-  int chk = sensor.read();
-  sensors.requestTemperatures(); 
+  int chk = DHT22.read();
+  DS18B20.requestTemperatures(); 
   
-  if (sensor.hum > 80) {
+  if (DHT22.hum > 80) {
     vent(VENT_ON);
-    // lcd.backlight();
   } else if (ventState == VENT_ON) {
     vent(VENT_OFF);
-   // lcd.noBacklight();
   }
 
   // полив если сухо по расписанию
@@ -212,18 +212,27 @@ void loop()
     }
   }
 
+  displayInfo();
+
+  delay(1000);
   
+}
+
+
+void displayInfo() {
+
+  String tmp;
   
   lcd.setCursor(0, 0);
   lcd.print("B\2A\3HOCT\5        %");
   lcd.setCursor(12, 0);
-  lcd.print(sensor.hum);
+  lcd.print(DHT22.hum);
   lcd.setCursor(0, 1);
   lcd.print("TEM\6      \1");
   lcd.setCursor(5, 1);
-  lcd.print(sensor.tem);
+  lcd.print(DHT22.tem);
   lcd.setCursor(11, 1);
-  lcd.print(" " +String(sensors.getTempCByIndex(0),2));
+  lcd.print(" " +String(DS18B20.getTempCByIndex(0),2));
   lcd.setCursor(0, 2);
   if (ventState == VENT_ON){
     tmp = "BEHT ON ";
@@ -236,13 +245,10 @@ void loop()
       lcd.print(time.gettime("d-m-Y H:i:s")); // выводим время
   //    delay(1); // приостанавливаем на 1 мс, чтоб не выводить время несколько раз за 1мс
   //  }
-  delay(1000);
   // lcd.noBacklight();
   // lcd.blink();
 
 }
-
-
 
 void vent(int state){
   //if (ventState != state) {
