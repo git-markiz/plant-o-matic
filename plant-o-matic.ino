@@ -92,7 +92,7 @@ byte p [8] = // кодируем символ (п)
 };
 
 
-#define RELE_VENT_PIN 22
+#define RELE_VENT_PIN 27
 #define ONE_WIRE_BUS 32 // номер пина к которому подключен DS18B20
 
 #define DHT_PIN 2
@@ -106,35 +106,42 @@ byte p [8] = // кодируем символ (п)
 
 #define MOISTUSE_MIN 300
 #define POLIV_INTERVAL 5
+#define VENT_INTERVAL 120
 
-#define VENT_ON 1
-#define VENT_OFF 0
+//#define VENT_ON 1
+//#define VENT_OFF 0
 
 OneWire oneWire(ONE_WIRE_BUS);
-DallasTemperature sensors(&oneWire);
-iarduino_DHT sensor(DHT_PIN);
+DallasTemperature DS18B20(&oneWire);
+iarduino_DHT DHT22(DHT_PIN);
 LiquidCrystal_I2C lcd(0x27,20,4);  // Устанавливаем дисплей
 iarduino_RTC time(RTC_DS1302, 40, 38, 39); // подключаем RTC модуль на базе чипа DS1302, указывая выводы Arduino подключённые к выводам модуля RST, CLK, DAT
 
-float sensHum = 0;
-int ventState = VENT_OFF;
-int sensorHumGroundValue =0;
-String tmp;
-// состояния системы
+// состояния системы 
 enum State
 {
     OFF,
     ON,
 };
- 
-// объявляем переменную state
-State statePompa;
-//State stateVent;
 
-// переменная для хранения времени в формате unixtime
-long unixTime;
-// проверка влажности почвы
-long timeMoistureCheck;
+ // объявляем переменную state
+State statePompa;
+State stateVent;
+
+float sensHum = 0;
+int sensorHumGroundValue =0;
+
+
+
+
+// временя последнего полива
+long tmWatering;
+// время последней проверки влажности почвы
+long tmMoistureCheck;
+// время последнего включения вентилятора
+long tmVentOn;
+
+
 
 void setup()
 { 
@@ -146,19 +153,20 @@ void setup()
   lcd.createChar(5,mz);
   lcd.createChar(6,p);
   lcd.createChar(7,y);
-  // pinMode(RELE_VENT_PIN, OUTPUT);
+  pinMode(RELE_VENT_PIN, OUTPUT);
   pinMode(RELE_POMPA_PIN, OUTPUT);
   digitalWrite( RELE_POMPA_PIN, HIGH );
   pinMode(RELE_MOISTURE_PIN, OUTPUT);
   digitalWrite( RELE_MOISTURE_PIN, HIGH );
   
-  vent(VENT_OFF);
+  ventOff();
+  
   
   statePompa = OFF;
  // __TIMESTAMP__
-  sensors.begin(); // DS18B20
+  DS18B20.begin(); // DS18B20
   time.begin();
-  // time.settime(0,7,0,23,11,17,2);
+   time.settime(0,0,9,31,01,18,2);
   // синкаем вручную время
   time.gettime();
   setTime(
@@ -168,20 +176,32 @@ void setup()
     time.day,
     time.month,
     time.year);
+
 }
 
 
 void loop()
 {
-  int chk = sensor.read();
-  sensors.requestTemperatures(); 
-  
-  if (sensor.hum > 80) {
-    vent(VENT_ON);
-    // lcd.backlight();
-  } else if (ventState == VENT_ON) {
-    vent(VENT_OFF);
-   // lcd.noBacklight();
+  int chk = DHT22.read();
+  DS18B20.requestTemperatures(); 
+
+  // управление вентилятором
+  // приоритет контроль перегрева, когда t > 28C
+  // влажность держим ниже 65
+  // включаем пока не упадёт ниже а потом с запасом на 120 сек 
+  if (DHT22.tem > 27) {
+    ventOn();    // tmVentOn обновляется каждый раз
+  }
+  if (DHT22.hum > 65) {
+    ventOn();
+  }
+  // просто обновляем немного воздух каждые 10 минут
+  if ( stateVent == OFF && (now() - (tmVentOn + VENT_INTERVAL) > 600)) {
+    ventOn();
+  }
+  // if (ventState == VENT_ON && (DHT22.hum < 45 || DHT22.tem < 23)) {
+  if (stateVent == ON && ( now() - tmVentOn > VENT_INTERVAL) ) {
+    ventOff();
   }
 
   // полив если сухо по расписанию
@@ -192,76 +212,132 @@ void loop()
 
   // если система выключена
   if (statePompa == OFF) {
-    if (tm_hour == TIME_HOUR && tm_minute == TIME_MINUTES && ((unixTime + 60) < now())) {      
-      // включаем полив если надо
+    // включаем полив если надо
+    if (tm_hour == TIME_HOUR && tm_minute == TIME_MINUTES && ((tmWatering + 60) < now())) {      
       // проверяем влажность земли
       if (isGroundDry()){
-        // запоминаем текущее время
-
-        unixTime = now(); //clock.getUnixTime();
         wateringOn();
+        // запоминаем время полива
+        tmWatering = now();
       }
     }
   }
   // если полив включен
   if (statePompa == ON) {
-    if (now() - unixTime > POLIV_INTERVAL) {
+    if (now() - tmWatering > POLIV_INTERVAL) {
       // если прошёл заданный интервал времени для полива
       // выключаем полив
       wateringOff();
     }
   }
 
+  displayInfo();
   
-  
+}
+
+
+// время последнего вывода
+long tmDisplay;
+
+// отображаем текущую инфу
+void displayInfo() {
+
+  String tmp;
+
+  // не частим с выводом
+  if (tmDisplay + 1 > now()) {
+    return false;
+  }
   lcd.setCursor(0, 0);
   lcd.print("B\2A\3HOCT\5        %");
   lcd.setCursor(12, 0);
-  lcd.print(sensor.hum);
+  lcd.print(DHT22.hum);
   lcd.setCursor(0, 1);
   lcd.print("TEM\6      \1");
   lcd.setCursor(5, 1);
-  lcd.print(sensor.tem);
+  lcd.print(DHT22.tem);
   lcd.setCursor(11, 1);
-  lcd.print(" " +String(sensors.getTempCByIndex(0),2));
+  lcd.print(" " +String(DS18B20.getTempCByIndex(0),2));
   lcd.setCursor(0, 2);
-  if (ventState == VENT_ON){
+  if (stateVent == ON){
     tmp = "BEHT ON ";
   } else tmp = "BEHT OFF";
   lcd.print( tmp );
   lcd.setCursor(10,2);
   lcd.print(sensorHumGroundValue + String("   "));
   lcd.setCursor(0,3);
-  //if(millis()%500==0){ // если прошла 1 секунда
-      lcd.print(time.gettime("d-m-Y H:i:s")); // выводим время
-  //    delay(1); // приостанавливаем на 1 мс, чтоб не выводить время несколько раз за 1мс
-  //  }
-  delay(1000);
+  lcd.print(time.gettime("d-m-Y H:i:s"));
   // lcd.noBacklight();
   // lcd.blink();
-
 }
 
-
-
-void vent(int state){
-  //if (ventState != state) {
-    digitalWrite(RELE_VENT_PIN, !state);
-    ventState = state;
-  //}
+// вентилятор
+void ventOn(){
+    digitalWrite(RELE_VENT_PIN, LOW);
+    stateVent = ON;
+    tmVentOn = now();
 }
 
+void ventOff(){
+    digitalWrite(RELE_VENT_PIN, HIGH);
+    stateVent = OFF;
+}
+
+enum stateMeasure {
+//  START,
+//  RELE_ON,
+  STOP,
+  MEASURING,
+  TIMEDELAY
+};
+
+stateMeasure groundCheckState = STOP;
+unsigned long tmMeasureEnd;
 
 // проверка сухой земли
 bool isGroundDry() {
+
+//  switch (groundCheckState) {
+//
+//    case STOP:
+//      //замыкаем реле, питающее датчики влажности
+//      digitalWrite( RELE_MOISTURE_PIN , LOW );
+//      groundCheckState = MEASURING;
+//      tmMeasureEnd = 1000 + now();
+//      break;
+//
+//    case MEASURING:
+//      // ждём когда прогреется :)
+//      if ( tmMeasureEnd < now() ) {
+//        sensorHumGroundValue = analogRead(MOISTUSE_PIN);
+//        tmMoistureCheck = now();
+//        //размыкаем реле, питающее датчик влажности
+//        digitalWrite( RELE_MOISTURE_PIN, HIGH );
+//        groundCheckState = TIMEDELAY;
+//      }
+//      break;
+//    case TIMEDELAY:
+//      // чтобы не клацать 20 раз
+//      if ( tmMoistureCheck + 60 < now()) {
+//        groundCheckState = STOP;
+//      }
+//      break;
+//  }   
+  
+//  if ( sensorHumGroundValue < MOISTUSE_MIN ){ 
+//    return true;
+//  }      
+//  return false;
+  
+  
   // чтобы не клацать 20 раз
-  if ( timeMoistureCheck + 60 < now()) {
+  if ( tmMoistureCheck + 60 < now()) {
       //замыкаем реле, питающее датчики влажности
       digitalWrite( RELE_MOISTURE_PIN , LOW ); 
       //ждем 3с для установления значения
       delay( 3000 ); 
       sensorHumGroundValue = analogRead(MOISTUSE_PIN);
-      timeMoistureCheck = now();
+      tmMoistureCheck = now();
       //размыкаем реле, питающее датчик влажности
       digitalWrite( RELE_MOISTURE_PIN, HIGH ); 
   }
